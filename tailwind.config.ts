@@ -9,6 +9,7 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        border: 'rgba(255, 255, 255, 0.2)',
         primary: {
           50: '#fff9e6',
           100: '#fff3cc',
