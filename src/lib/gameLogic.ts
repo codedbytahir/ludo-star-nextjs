@@ -1,167 +1,230 @@
-import { GameState, Player, Token, User, DiceValue } from '@/types/game'
+import { GameState, Player, Token } from '@/types/game'
+import { User } from '@/types/game'
+import {
+  PlayerColor,
+  WINNING_STEPS,
+  HOME_STRETCH_STEPS,
+  TOTAL_STEPS,
+  isSafePosition,
+  areTokensOnSamePosition,
+  getAbsolutePosition
+} from './boardConstants'
 
-const PLAYER_COLORS = [
-  { color: '#E63946', name: 'red' as const },
-  { color: '#06FFA5', name: 'green' as const },
-  { color: '#FFD700', name: 'yellow' as const },
-  { color: '#3A86FF', name: 'blue' as const },
-]
-
-const initTokens = (): Token[] => [
-  { position: -1, isHome: false, isSafe: false },
-  { position: -1, isHome: false, isSafe: false },
-  { position: -1, isHome: false, isSafe: false },
-  { position: -1, isHome: false, isSafe: false },
-]
-
-export const initializeGame = (user: User, gameMode: 'quick' | 'offline' | 'local'): GameState => {
+// Initialize a new game
+export function initializeGame(user: User, gameMode: 'quick' | 'offline' | 'local'): GameState {
   const players: Player[] = [
-    {
-      id: user.id,
-      username: user.username,
-      color: PLAYER_COLORS[0].color,
-      colorName: PLAYER_COLORS[0].name,
-      isAI: false,
-      tokens: initTokens(),
-      tokensHome: 0,
-      isActive: true,
-    },
-    {
-      id: 'ai-1',
-      username: 'AI Challenger',
-      color: PLAYER_COLORS[1].color,
-      colorName: PLAYER_COLORS[1].name,
-      isAI: true,
-      tokens: initTokens(),
-      tokensHome: 0,
-    },
-    {
-      id: 'ai-2',
-      username: 'AI Warrior',
-      color: PLAYER_COLORS[2].color,
-      colorName: PLAYER_COLORS[2].name,
-      isAI: true,
-      tokens: initTokens(),
-      tokensHome: 0,
-    },
-    {
-      id: 'ai-3',
-      username: 'AI Master',
-      color: PLAYER_COLORS[3].color,
-      colorName: PLAYER_COLORS[3].name,
-      isAI: true,
-      tokens: initTokens(),
-      tokensHome: 0,
-    },
+    createPlayer(user.id, user.username, PlayerColor.RED, false),
+    createPlayer('ai-1', 'AI Player 1', PlayerColor.GREEN, gameMode !== 'local'),
+    createPlayer('ai-2', 'AI Player 2', PlayerColor.YELLOW, gameMode !== 'local'),
+    createPlayer('ai-3', 'AI Player 3', PlayerColor.BLUE, gameMode !== 'local')
   ]
 
   return {
     players,
     currentPlayerIndex: 0,
     diceValue: null,
-    turnCount: 1,
-    gameMode,
-    isRolling: false,
     validMoves: [],
     selectedToken: null,
+    turnCount: 1,
     winner: null,
     rankings: [],
+    isRolling: false
   }
 }
 
-export const rollDice = (): DiceValue => {
-  return (Math.floor(Math.random() * 6) + 1) as DiceValue
+// Create a player
+function createPlayer(id: string, username: string, color: PlayerColor, isAI: boolean): Player {
+  return {
+    id,
+    username,
+    color,
+    isAI,
+    tokens: [
+      { id: 0, position: -1, isHome: false }, // -1 means in base
+      { id: 1, position: -2, isHome: false },
+      { id: 2, position: -3, isHome: false },
+      { id: 3, position: -4, isHome: false }
+    ],
+    tokensHome: 0
+  }
 }
 
-export const getValidMoves = (player: Player, diceValue: number): number[] => {
-  const moves: number[] = []
-  
+// Roll dice (1-6)
+export function rollDice(): number {
+  return Math.floor(Math.random() * 6) + 1
+}
+
+// Get valid moves for current player
+export function getValidMoves(player: Player, diceValue: number): number[] {
+  const validMoves: number[] = []
+
   player.tokens.forEach((token, index) => {
-    // Token in home base - can only move out with a 6
-    if (token.position === -1 && diceValue === 6) {
-      moves.push(index)
-    }
-    // Token on board - can move if won't exceed home
-    else if (token.position >= 0 && token.position < 57) {
-      const newPos = token.position + diceValue
-      if (newPos <= 57) {
-        moves.push(index)
-      }
+    if (canMoveToken(player, token, diceValue)) {
+      validMoves.push(index)
     }
   })
-  
-  return moves
+
+  return validMoves
 }
 
-export const moveToken = (
-  gameState: GameState,
-  tokenIndex: number,
-  diceValue: number
-): GameState => {
-  const newState = JSON.parse(JSON.stringify(gameState)) as GameState
-  const player = newState.players[newState.currentPlayerIndex]
-  const token = player.tokens[tokenIndex]
-  
-  // Move token out of home base
-  if (token.position === -1 && diceValue === 6) {
-    token.position = 0
+// Check if a token can be moved
+function canMoveToken(player: Player, token: Token, diceValue: number): boolean {
+  // Token already home
+  if (token.isHome) return false
+
+  // Token in base - can only move out with a 6
+  if (token.position < 0) {
+    return diceValue === 6
   }
-  // Move token on board
-  else if (token.position >= 0) {
-    token.position += diceValue
-    
-    // Check if reached home
-    if (token.position >= 57) {
-      token.position = 57
-      token.isHome = true
-      player.tokensHome++
-    }
-  }
+
+  // Check if move would exceed winning position
+  const newPosition = token.position + diceValue
   
-  newState.turnCount++
+  // Can't move past the final home position
+  if (newPosition > TOTAL_STEPS) return false
+
+  return true
+}
+
+// Move a token
+export function moveToken(gameState: GameState, tokenIndex: number, diceValue: number): GameState {
+  const newState = { ...gameState }
+  const currentPlayer = newState.players[newState.currentPlayerIndex]
+  const token = currentPlayer.tokens[tokenIndex]
+
+  // Calculate new position
+  let newPosition: number
+
+  if (token.position < 0) {
+    // Moving out of base
+    newPosition = 0
+  } else {
+    newPosition = token.position + diceValue
+  }
+
+  // Update token position
+  token.position = newPosition
+
+  // Check if token reached home
+  if (newPosition >= TOTAL_STEPS) {
+    token.isHome = true
+    currentPlayer.tokensHome++
+  }
+
+  // Check for captures (only on main path, not in home stretch)
+  if (newPosition < WINNING_STEPS && !isSafePosition(newPosition)) {
+    checkAndCaptureTokens(newState, currentPlayer, newPosition)
+  }
+
   return newState
 }
 
-export const checkWinner = (gameState: GameState): { winner: Player; rankings: Player[] } | null => {
-  const winner = gameState.players.find(p => p.tokensHome === 4)
-  
-  if (winner) {
-    const rankings = [...gameState.players].sort((a, b) => {
-      if (b.tokensHome !== a.tokensHome) {
-        return b.tokensHome - a.tokensHome
+// Check and capture opponent tokens
+function checkAndCaptureTokens(gameState: GameState, currentPlayer: Player, position: number) {
+  gameState.players.forEach(player => {
+    if (player.id === currentPlayer.id) return // Skip current player
+
+    player.tokens.forEach(token => {
+      if (token.position < 0 || token.isHome) return // Skip tokens in base or home
+
+      // Check if tokens are on same position
+      if (areTokensOnSamePosition(
+        currentPlayer.color as PlayerColor,
+        position,
+        player.color as PlayerColor,
+        token.position
+      )) {
+        // Send opponent token back to base
+        const basePosition = -(token.id + 1)
+        token.position = basePosition
+        token.isHome = false
       }
-      // If same tokens home, sort by who got there first (lower turn count)
-      return 0
     })
-    
-    return { winner, rankings }
+  })
+}
+
+// Check for winner
+export function checkWinner(gameState: GameState): { winner: Player, rankings: Player[] } | null {
+  const finishedPlayers = gameState.players.filter(p => p.tokensHome === 4)
+  
+  if (finishedPlayers.length === 0) return null
+
+  // Sort by tokens home (descending) and then by turn order
+  const rankings = [...gameState.players].sort((a, b) => {
+    if (b.tokensHome !== a.tokensHome) {
+      return b.tokensHome - a.tokensHome
+    }
+    return 0
+  })
+
+  return {
+    winner: finishedPlayers[0],
+    rankings
   }
+}
+
+// Check if player gets extra turn (rolled a 6)
+export function getsExtraTurn(diceValue: number): boolean {
+  return diceValue === 6
+}
+
+// Get token position for rendering
+export function getTokenRenderPosition(player: Player, tokenIndex: number): { x: number, y: number } {
+  const token = player.tokens[tokenIndex]
+  const color = player.color as PlayerColor
   
-  return null
+  // Import here to avoid circular dependency
+  const { getTokenCoordinates } = require('./boardConstants')
+  return getTokenCoordinates(color, token.position)
 }
 
-export const getNextPlayerIndex = (currentIndex: number, totalPlayers: number): number => {
-  return (currentIndex + 1) % totalPlayers
-}
-
-export const shouldGetExtraTurn = (diceValue: number, captured: boolean): boolean => {
-  return diceValue === 6 || captured
-}
-
-// Safe squares on the board (star positions)
-export const SAFE_SQUARES = [1, 9, 14, 22, 27, 35, 40, 48]
-
-export const isSafeSquare = (position: number): boolean => {
-  return SAFE_SQUARES.includes(position)
-}
-
-// Check if a token can capture another token
-export const canCapture = (position: number, playerColor: string, otherPlayerColor: string): boolean => {
-  // Can't capture on safe squares
-  if (isSafeSquare(position)) return false
+// Calculate score for a player (for AI and stats)
+export function calculatePlayerScore(player: Player): number {
+  let score = 0
   
-  // Can't capture your own tokens
-  if (playerColor === otherPlayerColor) return false
+  // Points for tokens home
+  score += player.tokensHome * 100
   
-  return true
+  // Points for tokens on board
+  player.tokens.forEach(token => {
+    if (token.position >= 0 && !token.isHome) {
+      score += token.position
+    }
+  })
+  
+  return score
+}
+
+// Get player by color
+export function getPlayerByColor(gameState: GameState, color: PlayerColor): Player | undefined {
+  return gameState.players.find(p => p.color === color)
+}
+
+// Check if position is occupied by current player's token
+export function isPositionOccupiedByPlayer(player: Player, position: number): boolean {
+  return player.tokens.some(token => 
+    token.position === position && !token.isHome
+  )
+}
+
+// Get all tokens at a specific position
+export function getTokensAtPosition(gameState: GameState, color: PlayerColor, position: number): Token[] {
+  const tokens: Token[] = []
+  
+  gameState.players.forEach(player => {
+    player.tokens.forEach(token => {
+      if (token.position < 0 || token.isHome) return
+      
+      if (areTokensOnSamePosition(
+        color,
+        position,
+        player.color as PlayerColor,
+        token.position
+      )) {
+        tokens.push(token)
+      }
+    })
+  })
+  
+  return tokens
 }
